@@ -4,17 +4,14 @@
 // A telemetry logging module for Adventure Game Studio (AGS) games.
 // Tracks player sessions, interactions, and game events for beta testing.
 //
-// REQUIRED: Define VERSION in your project (e.g., in GlobalScript.ash or a Util module):
+// REQUIRED: Define these in your project (e.g., in GlobalScript.ash or a Util module)
+//   before importing Telemetry:
 //   #define VERSION "1.0.0-beta"
-
-// Comment out the line below to completely disable telemetry at compile time
-#define TELEMETRY_ENABLED
+//   #define TELEMETRY_ENABLED
 
 // Configuration variables (set these in TelemetryConfig_Init)
 import int Telemetry_IdleSecondsThreshold;   // Seconds before player is considered idle
 import String Telemetry_LogPath;              // Path to telemetry log file
-import String Telemetry_UseUntilDate;         // Expiry date "YYYY-MM-DD" or empty to disable
-import String Telemetry_QuitMessage;          // Message shown when build expires
 import String Telemetry_BuildVersion;         // Your game version string
 import String Telemetry_PlatformTag;          // Optional platform identifier
 

@@ -11,7 +11,6 @@ A telemetry logging module for [Adventure Game Studio](https://www.adventuregame
 - **Bug Reporting**: Capture bug reports with screenshots and game state
 - **Custom Events**: Log any custom events specific to your game
 - **Milestone Tracking**: Log key game milestones like act completions and endings
-- **Beta Expiry**: Optionally expire beta builds after a specified date
 - **Idle Detection**: Distinguish between active play time and idle time
 
 ## Installation
@@ -23,16 +22,19 @@ A telemetry logging module for [Adventure Game Studio](https://www.adventuregame
 
 ## Configuration
 
-### Set Your Version (Required)
+### Enable Telemetry and Set Your Version (Required)
 
-Define `VERSION` in your project before importing Telemetry. This is typically done in `GlobalScript.ash` or a utility module that compiles before Telemetry:
+Define `TELEMETRY_ENABLED` and `VERSION` in your project before importing Telemetry. This is typically done in `GlobalScript.ash` or a utility module that compiles before Telemetry:
 
 ```ags
 // In GlobalScript.ash or your Util.ash
+#define TELEMETRY_ENABLED
 #define VERSION "1.0.0-beta"
 ```
 
-This version is automatically logged with each session and can be used elsewhere in your game (e.g., displaying version on title screen).
+`TELEMETRY_ENABLED` controls whether telemetry code is compiled into your game. Remove or comment out this line to disable telemetry entirely.
+
+`VERSION` is automatically logged with each session and can be used elsewhere in your game (e.g., displaying version on title screen).
 
 ### Override Default Settings
 
@@ -44,9 +46,7 @@ void TelemetryConfig_Init()
 {
   Telemetry_IdleSecondsThreshold = 60;                    // Seconds before player is idle
   Telemetry_LogPath = "$SAVEGAMEDIR$/telemetry/telemetry.log";
-  Telemetry_UseUntilDate = "2025-06-30";                  // Beta expiry date (or "" to disable)
-  Telemetry_QuitMessage = "This beta has expired. Please download the latest version.";
-  Telemetry_BuildVersion = VERSION;                       // Uses VERSION from Telemetry.ash
+  Telemetry_BuildVersion = VERSION;                       // Uses VERSION defined in your project
   Telemetry_PlatformTag = "windows";                      // Optional platform identifier
 }
 ```
@@ -195,7 +195,14 @@ For a better user experience, create a GUI that lets players describe bugs and i
    - `btnBugSubmit` - A Button labeled "Submit"
    - `btnBugCancel` - A Button labeled "Cancel"
 
-**Step 2: Add the dialog code to GlobalScript.asc**
+**Step 2: Link button events in the GUI**
+
+In the AGS Editor, select the `gBugReport` GUI. For each button, click on it, go to the **Events** tab (lightning bolt icon), and link its `OnClick` event to the corresponding function in GlobalScript:
+   - `btnBugBlocking` -> `btnBugBlocking_OnClick`
+   - `btnBugSubmit` -> `btnBugSubmit_OnClick`
+   - `btnBugCancel` -> `btnBugCancel_OnClick`
+
+**Step 3: Add the dialog code to GlobalScript.asc**
 
 ```ags
 bool _bugReportBlocking = false;
@@ -237,7 +244,7 @@ function btnBugCancel_OnClick(GUIControl *control, MouseButton button)
 }
 ```
 
-**Step 3: Add keyboard shortcut (Ctrl+R)**
+**Step 4: Add keyboard shortcut (Ctrl+R)**
 
 In your `on_key_press()` function:
 
@@ -262,7 +269,7 @@ function on_key_press(eKeyCode keycode, int mod)
 }
 ```
 
-**Step 4: Allow Escape to close the dialog**
+**Step 5: Allow Escape to close the dialog**
 
 ```ags
 // In on_key_press, handle Escape
@@ -308,13 +315,7 @@ By default, the log file is saved to:
 
 ## Disabling Telemetry
 
-To completely disable telemetry at compile time, comment out this line in `Telemetry.ash`:
-
-```ags
-// #define TELEMETRY_ENABLED
-```
-
-This removes all telemetry code from the compiled game.
+To completely disable telemetry at compile time, remove or comment out the `#define TELEMETRY_ENABLED` line in your `GlobalScript.ash` (or wherever you defined it). This removes all telemetry code from the compiled game.
 
 ## Runtime Check
 
@@ -325,16 +326,6 @@ if (Telemetry_SessionActive) {
   // Show version number or beta indicator
 }
 ```
-
-## Beta Expiry
-
-Set `Telemetry_UseUntilDate` to a date string (YYYY-MM-DD) to make your beta build expire:
-
-```ags
-Telemetry_UseUntilDate = "2025-06-30";
-```
-
-When the build expires, `Telemetry_QuitMessage` is displayed and the game exits.
 
 ## License
 
