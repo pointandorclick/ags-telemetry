@@ -19,6 +19,7 @@ A telemetry logging module for [Adventure Game Studio](https://www.adventuregame
 2. In AGS Editor, right-click on "Scripts" in the Project Explorer
 3. Select "Import script..." and import both files
 4. Ensure the Telemetry module appears **above** your GlobalScript in the script order
+5. (Optional) Set up the [Bug Report GUI](#creating-a-bug-report-gui-ctrlr) to let players submit bug reports in-game
 
 ## Configuration
 
