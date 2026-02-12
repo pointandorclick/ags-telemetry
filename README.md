@@ -234,8 +234,9 @@ function btnBugSubmit_OnClick(GUIControl *control, MouseButton button)
     return;
   }
 
-  Telemetry_LogBugReport(desc, _bugReportBlocking);
+  // Hide the GUI before taking screenshot so it's not in the image
   gBugReport.Visible = false;
+  Telemetry_LogBugReport(desc, _bugReportBlocking);
   Display("Bug report submitted. Thank you!");
 }
 
