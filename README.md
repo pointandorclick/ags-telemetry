@@ -12,6 +12,7 @@ A telemetry logging module for [Adventure Game Studio](https://www.adventuregame
 - **Custom Events**: Log any custom events specific to your game
 - **Milestone Tracking**: Log key game milestones like act completions and endings
 - **Idle Detection**: Distinguish between active play time and idle time
+- **Remote Telemetry** (optional): Send events to a [telemetry dashboard](https://github.com/pointandorclick/ags-telemetry-dashboard) server in real-time via the `agsremotetelemetry` plugin, with automatic offline caching
 
 ## Installation
 
@@ -20,6 +21,7 @@ A telemetry logging module for [Adventure Game Studio](https://www.adventuregame
 3. Select "Import script..." and import both files
 4. Ensure the Telemetry module appears **above** your GlobalScript in the script order
 5. (Optional) Set up the [Bug Report GUI](#creating-a-bug-report-gui-ctrlr) to let players submit bug reports in-game
+6. (Optional) Install the [Remote Telemetry plugin](#remote-telemetry-optional) to send events to a dashboard server in real-time
 
 ## Configuration
 
@@ -291,6 +293,112 @@ The bug report logs:
 - Active inventory item
 - Screenshot filename
 - Player's description
+
+## Remote Telemetry (Optional)
+
+Send telemetry events to a dashboard server in real-time using the `agsremotetelemetry` plugin. Events are sent over HTTP on a background thread so the game is never blocked. If the server is unreachable, events are cached to a local file and retried automatically. The cache file uses the same pipe-delimited format as `telemetry.log`, so it can also be manually imported via the dashboard.
+
+### Plugin Installation
+
+#### 1. Build the plugin
+
+See [Building the Plugin](#building-the-plugin) below for prerequisites and build instructions.
+
+#### 2. Install in the AGS Editor
+
+Place the compiled plugin library in your AGS Editor directory (the folder containing `AGSEditor.exe`):
+
+| Platform | File to copy | Destination |
+|----------|-------------|-------------|
+| Windows  | `agsremotetelemetry.dll` | Same directory as `AGSEditor.exe` |
+| Linux    | `libagsremotetelemetry.so` | `Linux/lib64/` relative to the editor |
+| macOS    | `libagsremotetelemetry.dylib` | Same directory as the engine binary |
+
+Then in AGS Editor:
+1. Open your game project
+2. In the Project Explorer, expand the **Plugins** node
+3. Right-click **AGS Remote Telemetry** and select **Use plugin**
+4. Save your project
+
+#### 3. Distribute with your game
+
+When you build your game, the plugin must also be shipped alongside the game executable so it loads at runtime:
+
+- **Windows**: Place `agsremotetelemetry.dll` in the same folder as your game's `.exe`
+- **Linux**: Place `libagsremotetelemetry.so` in the same folder as the `ags` binary (or in a `lib/` subdirectory)
+- **macOS**: Place `libagsremotetelemetry.dylib` alongside the engine in the app bundle
+
+### Enable Remote Telemetry
+
+Add these defines to your project (e.g., `GlobalScript.ash`) alongside the existing telemetry defines:
+
+```ags
+#define TELEMETRY_ENABLED
+#define VERSION "1.0.0-TesterName"
+#define TELEMETRY_SERVER_URL "http://your-dashboard-server:3000"
+#define TELEMETRY_API_KEY "your-api-key"  // optional, omit if no auth configured
+```
+
+That's it. No other code changes are needed. The module automatically initializes the plugin on session start and sends events as they're logged. The local `telemetry.log` file is always written regardless of whether remote telemetry is active.
+
+### How It Works
+
+1. On `Telemetry_StartSession()`, the plugin connects to the dashboard and creates a remote session
+2. Each event logged via the module is simultaneously written to the local file AND queued for remote sending
+3. The plugin batches events and sends them on a background thread (up to 20 events per request)
+4. On `Telemetry_EndSession()`, remaining events are flushed and the remote session is closed
+
+### Offline Behavior
+
+- If the dashboard server is unreachable, events are cached to `remote_cache.log` in the telemetry directory
+- On the next session start, cached events are sent before new events
+- The cache file uses the same pipe-delimited format as `telemetry.log` and can be manually imported via the dashboard's import feature
+- The local `telemetry.log` is always written, so no data is ever lost
+
+### Building the Plugin
+
+#### Prerequisites
+
+- **CMake** 3.14 or later
+- A **C++11** compiler (GCC, Clang, or MSVC)
+- **libcurl** development libraries
+- **AGS Plugin SDK header** (`agsplugin.h`)
+
+Install libcurl development packages for your platform:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libcurl4-openssl-dev
+
+# macOS (Homebrew)
+brew install curl
+
+# Windows (vcpkg)
+vcpkg install curl
+```
+
+#### Build Steps
+
+```bash
+cd plugin
+
+# Download the AGS plugin SDK header
+curl -O https://raw.githubusercontent.com/adventuregamestudio/ags/master/Engine/plugin/agsplugin.h
+
+# Build
+mkdir build && cd build
+cmake ..
+cmake --build . --config Release
+```
+
+The compiled plugin will be in the `build/` directory:
+- **Windows**: `build/Release/agsremotetelemetry.dll`
+- **Linux**: `build/libagsremotetelemetry.so`
+- **macOS**: `build/libagsremotetelemetry.dylib`
+
+### Disabling Remote Telemetry
+
+Remove or comment out the `#define TELEMETRY_SERVER_URL` line. The plugin can remain loaded but will not be initialized. Local file logging continues to work normally.
 
 ## Log File Format
 

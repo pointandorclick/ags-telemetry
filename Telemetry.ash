@@ -9,6 +9,11 @@
 //   #define VERSION "1.0.0-beta"
 //   #define TELEMETRY_ENABLED
 
+// OPTIONAL: Define these in your project to enable remote telemetry
+// (requires the agsremotetelemetry plugin):
+//   #define TELEMETRY_SERVER_URL "http://your-dashboard:3000"
+//   #define TELEMETRY_API_KEY "your-api-key"
+
 // Configuration variables (set these in TelemetryConfig_Init)
 import int Telemetry_IdleSecondsThreshold;   // Seconds before player is considered idle
 import String Telemetry_LogPath;              // Path to telemetry log file
