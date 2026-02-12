@@ -1,19 +1,28 @@
 // AGS Remote Telemetry Plugin
 // Sends telemetry events to a dashboard server in real-time.
-// Uses a background thread + libcurl for non-blocking HTTP.
+// Uses a background thread for non-blocking HTTP.
 //
-// Build: requires libcurl and C++11
+// HTTP backend:
+//   Windows: WinHTTP (built-in, no external dependencies)
+//   macOS/Linux: libcurl
+//
 // Usage: define TELEMETRY_SERVER_URL in your AGS project
 
 #if defined(_WIN32)
 #undef WINDOWS_VERSION
 #define WINDOWS_VERSION
+// Include Windows headers BEFORE agsplugin.h so its type guards
+// (_WINDOWS_, _WINGDI_) detect the real types and skip the stubs.
+#include <windows.h>
+#include <winhttp.h>
 #endif
 
 #define THIS_IS_THE_PLUGIN
 #include "agsplugin.h"
 
+#ifndef WINDOWS_VERSION
 #include <curl/curl.h>
+#endif
 
 #include <thread>
 #include <mutex>
@@ -56,6 +65,11 @@ static std::string g_pendingRuntime;
 // Cache file for offline events
 static std::string g_cachePath;
 
+// Parsed URL components (used by WinHTTP backend)
+static std::string g_urlHost;
+static int g_urlPort = 80;
+static bool g_urlSecure = false;
+
 // ---------------------------------------------------------------------------
 // JSON helpers
 // ---------------------------------------------------------------------------
@@ -81,6 +95,50 @@ static std::string jsonEscape(const std::string &s)
         }
     }
     return r;
+}
+
+// ---------------------------------------------------------------------------
+// URL parsing
+// ---------------------------------------------------------------------------
+static void parseBaseUrl(const std::string &url)
+{
+    // Extract scheme, host, port from the server URL
+    std::string remainder = url;
+
+    if (remainder.substr(0, 8) == "https://") {
+        g_urlSecure = true;
+        g_urlPort = 443;
+        remainder = remainder.substr(8);
+    } else if (remainder.substr(0, 7) == "http://") {
+        g_urlSecure = false;
+        g_urlPort = 80;
+        remainder = remainder.substr(7);
+    }
+
+    // Remove trailing path
+    size_t slash = remainder.find('/');
+    if (slash != std::string::npos) {
+        remainder = remainder.substr(0, slash);
+    }
+
+    // Check for port
+    size_t colon = remainder.find(':');
+    if (colon != std::string::npos) {
+        g_urlHost = remainder.substr(0, colon);
+        g_urlPort = atoi(remainder.substr(colon + 1).c_str());
+    } else {
+        g_urlHost = remainder;
+    }
+}
+
+// Extract path from a full URL (everything after host:port)
+static std::string extractPath(const std::string &url)
+{
+    size_t schemeEnd = url.find("://");
+    if (schemeEnd == std::string::npos) return url;
+    size_t pathStart = url.find('/', schemeEnd + 3);
+    if (pathStart == std::string::npos) return "/";
+    return url.substr(pathStart);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,8 +206,120 @@ static std::string eventToJson(const ParsedEvent &ev)
 }
 
 // ---------------------------------------------------------------------------
-// HTTP helpers (libcurl)
+// HTTP backend
 // ---------------------------------------------------------------------------
+
+#ifdef WINDOWS_VERSION
+// ---- WinHTTP backend (Windows) ----
+
+static std::string httpRequest(const std::string &method, const std::string &url,
+                               const std::string &body)
+{
+    std::string path = extractPath(url);
+
+    // Convert strings to wide chars for WinHTTP
+    int hostLen = MultiByteToWideChar(CP_UTF8, 0, g_urlHost.c_str(), -1, NULL, 0);
+    int pathLen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, NULL, 0);
+    int methodLen = MultiByteToWideChar(CP_UTF8, 0, method.c_str(), -1, NULL, 0);
+
+    std::vector<wchar_t> wHost(hostLen), wPath(pathLen), wMethod(methodLen);
+    MultiByteToWideChar(CP_UTF8, 0, g_urlHost.c_str(), -1, wHost.data(), hostLen);
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wPath.data(), pathLen);
+    MultiByteToWideChar(CP_UTF8, 0, method.c_str(), -1, wMethod.data(), methodLen);
+
+    HINTERNET hSession = WinHttpOpen(L"AGSRemoteTelemetry/1.0",
+                                     WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                     WINHTTP_NO_PROXY_NAME,
+                                     WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return "";
+
+    // Set timeouts: resolve=5s, connect=5s, send=10s, receive=10s
+    WinHttpSetTimeouts(hSession, 5000, 5000, 10000, 10000);
+
+    HINTERNET hConnect = WinHttpConnect(hSession, wHost.data(),
+                                        static_cast<INTERNET_PORT>(g_urlPort), 0);
+    if (!hConnect) {
+        WinHttpCloseHandle(hSession);
+        return "";
+    }
+
+    DWORD flags = g_urlSecure ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, wMethod.data(), wPath.data(),
+                                            NULL, WINHTTP_NO_REFERER,
+                                            WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+    if (!hRequest) {
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return "";
+    }
+
+    // Add headers
+    std::wstring headers = L"Content-Type: application/json\r\n";
+    if (!g_apiKey.empty()) {
+        std::string authStr = "Authorization: Bearer " + g_apiKey + "\r\n";
+        int authLen = MultiByteToWideChar(CP_UTF8, 0, authStr.c_str(), -1, NULL, 0);
+        std::vector<wchar_t> wAuth(authLen);
+        MultiByteToWideChar(CP_UTF8, 0, authStr.c_str(), -1, wAuth.data(), authLen);
+        headers += wAuth.data();
+    }
+
+    WinHttpAddRequestHeaders(hRequest, headers.c_str(),
+                             static_cast<DWORD>(headers.size()),
+                             WINHTTP_ADDREQ_FLAG_ADD);
+
+    BOOL result = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                     (LPVOID)body.c_str(),
+                                     static_cast<DWORD>(body.size()),
+                                     static_cast<DWORD>(body.size()), 0);
+    if (!result) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return "";
+    }
+
+    result = WinHttpReceiveResponse(hRequest, NULL);
+    if (!result) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return "";
+    }
+
+    // Check status code
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    WinHttpQueryHeaders(hRequest,
+                        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX,
+                        &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+
+    // Read response body
+    std::string response;
+    DWORD bytesAvailable = 0;
+    while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable) && bytesAvailable > 0) {
+        std::vector<char> buf(bytesAvailable);
+        DWORD bytesRead = 0;
+        WinHttpReadData(hRequest, buf.data(), bytesAvailable, &bytesRead);
+        response.append(buf.data(), bytesRead);
+    }
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+
+    if (statusCode < 200 || statusCode >= 300) {
+        return "";
+    }
+    return response;
+}
+
+static void httpGlobalInit() {}
+static void httpGlobalCleanup() {}
+
+#else
+// ---- libcurl backend (macOS / Linux) ----
+
 static size_t writeCallback(void *contents, size_t size, size_t nmemb, void *userp)
 {
     size_t totalSize = size * nmemb;
@@ -158,7 +328,6 @@ static size_t writeCallback(void *contents, size_t size, size_t nmemb, void *use
     return totalSize;
 }
 
-// Returns response body on success, empty string on failure.
 static std::string httpRequest(const std::string &method, const std::string &url,
                                const std::string &body)
 {
@@ -200,6 +369,11 @@ static std::string httpRequest(const std::string &method, const std::string &url
     }
     return response;
 }
+
+static void httpGlobalInit() { curl_global_init(CURL_GLOBAL_DEFAULT); }
+static void httpGlobalCleanup() { curl_global_cleanup(); }
+
+#endif
 
 // Extract a numeric JSON field value: "fieldName": 123
 static int extractJsonInt(const std::string &json, const std::string &field)
@@ -526,6 +700,9 @@ static void RT_Init(const char *serverUrl, const char *apiKey)
     while (!g_serverUrl.empty() && g_serverUrl.back() == '/')
         g_serverUrl.pop_back();
 
+    // Parse URL components (needed by WinHTTP backend)
+    parseBaseUrl(g_serverUrl);
+
     // Resolve cache file path
     if (engine->version >= 27) {
         char resolved[1024] = {0};
@@ -537,7 +714,7 @@ static void RT_Init(const char *serverUrl, const char *apiKey)
         g_cachePath = "remote_cache.log";
     }
 
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    httpGlobalInit();
 
     g_shutdownRequested.store(false);
     g_threadRunning.store(true);
@@ -578,7 +755,7 @@ static void RT_Shutdown()
     }
 
     g_threadRunning.store(false);
-    curl_global_cleanup();
+    httpGlobalCleanup();
 }
 
 // ---------------------------------------------------------------------------

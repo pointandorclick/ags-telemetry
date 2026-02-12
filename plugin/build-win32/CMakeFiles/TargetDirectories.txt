@@ -1,0 +1,3 @@
+/Users/craig/Code/@pointandorclick/ags-telemetry/plugin/build-win32/CMakeFiles/agsremotetelemetry.dir
+/Users/craig/Code/@pointandorclick/ags-telemetry/plugin/build-win32/CMakeFiles/edit_cache.dir
+/Users/craig/Code/@pointandorclick/ags-telemetry/plugin/build-win32/CMakeFiles/rebuild_cache.dir
