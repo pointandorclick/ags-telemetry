@@ -1,2 +1,3 @@
 agsplugin.h
 build/
+build-win32/
