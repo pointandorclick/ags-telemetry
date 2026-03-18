@@ -4,10 +4,12 @@
 // A telemetry logging module for Adventure Game Studio (AGS) games.
 // Tracks player sessions, interactions, and game events for beta testing.
 //
-// REQUIRED: Define these in your project (e.g., in GlobalScript.ash or a Util module)
-//   before importing Telemetry:
-//   #define VERSION "1.0.0-beta"
-//   #define TELEMETRY_ENABLED
+// SETUP:
+//   1. Add Telemetry.ash and Telemetry.asc to your AGS project.
+//   2. Optionally define TELEMETRY_ENABLED in a Config module loaded before
+//      this one, then wrap your calls with #ifdef TELEMETRY_ENABLED.
+//   3. Implement TelemetryConfig_Init() in your game to set config values,
+//      or use the default provided at the bottom of Telemetry.asc.
 
 // Configuration variables (set these in TelemetryConfig_Init)
 import int Telemetry_IdleSecondsThreshold;   // Seconds before player is considered idle
@@ -18,7 +20,7 @@ import String Telemetry_PlatformTag;          // Optional platform identifier
 // Core session functions
 import void Telemetry_StartSession();         // Call in game_start()
 import void Telemetry_EndSession();           // Call in game_shutdown() (on_event with eEventLeaveRoom also works)
-import void Telemetry_Tick();                 // Call in repeatedly_execute()
+import void Telemetry_Tick();                 // Call in repeatedly_execute() or repeatedly_execute_always()
 import void Telemetry_UserInput();            // Call in on_mouse_click() and on_key_press()
 
 // Interaction logging
@@ -41,6 +43,8 @@ import void Telemetry_LogEvent(String eventName, String data);
 import void Telemetry_LogMilestone(String milestoneName);
 
 // Bug reporting - returns screenshot filename (or empty string if telemetry disabled)
+import void Telemetry_PreCaptureBugScreenshot();         // Call before showing bug report UI
+import void Telemetry_DiscardPreCapturedScreenshot();    // Call if bug report is cancelled
 import String Telemetry_LogBugReport(String description, bool cannotContinue);
 
 // Configuration initializer - implement this in your game to set config values

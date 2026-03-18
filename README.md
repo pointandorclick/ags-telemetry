@@ -1,120 +1,123 @@
 # AGS Telemetry Module
 
-A telemetry logging module for [Adventure Game Studio](https://www.adventuregamestudio.co.uk/) (AGS) games. Track player sessions, interactions, and game events during beta testing to understand how players experience your game.
+A local telemetry logging module for [Adventure Game Studio](https://www.adventuregamestudio.co.uk/) (AGS 3.6+) games. Designed for alpha/beta testing, it tracks player sessions, interactions, idle time, room transitions, save/load events, bug reports, milestones, and errors -- all written to a plain-text log file on the player's machine.
 
 ## Features
 
-- **Session Tracking**: Log session start/end with active and idle time
-- **Interaction Logging**: Track inventory use, character interactions, and unhandled actions
-- **Room Tracking**: Log room enter/leave events
-- **Save/Restore Tracking**: Monitor save and restore actions
-- **Bug Reporting**: Capture bug reports with screenshots and game state
-- **Custom Events**: Log any custom events specific to your game
-- **Milestone Tracking**: Log key game milestones like act completions and endings
-- **Idle Detection**: Distinguish between active play time and idle time
+- Session start/end with active vs idle time tracking
+- Inventory-on-world and inventory-on-inventory interaction logging
+- Character interaction logging (look, interact, talk, use inventory)
+- Room enter/leave tracking (before and after fade)
+- Save/restore slot tracking
+- Unhandled interaction detection (catch-all / default response logging)
+- Custom event and milestone logging
+- Bug report system with automatic screenshot capture
+- Build version and runtime metadata
+- Optional platform tagging for multi-platform builds
+- Zero dependencies -- pure AGS script module
 
 ## Installation
 
-1. Copy `Telemetry.ash` and `Telemetry.asc` to your AGS game project folder
-2. In AGS Editor, right-click on "Scripts" in the Project Explorer
-3. Select "Import script..." and import both files
-4. Ensure the Telemetry module appears **above** your GlobalScript in the script order
-5. (Optional) Set up the [Bug Report GUI](#creating-a-bug-report-gui-ctrlr) to let players submit bug reports in-game
+1. Copy `Telemetry.ash` and `Telemetry.asc` into your AGS project folder.
+2. In the AGS Editor, add both files as a Script Module (right-click Scripts in the project tree > "New Script Module", then replace the generated files, or import them).
+3. Make sure the Telemetry module is loaded **after** any Config module that defines `#define` constants, and **before** your GlobalScript.
+
+Your script load order should look something like:
+
+```
+Config          (optional - for #defines like TELEMETRY_ENABLED)
+Telemetry       <-- this module
+[other modules]
+GlobalScript
+```
 
 ## Configuration
 
-### Enable Telemetry and Set Your Version (Required)
+### Option A: Use the built-in defaults
 
-Define `TELEMETRY_ENABLED` and `VERSION` in your project before importing Telemetry. This is typically done in `GlobalScript.ash` or a utility module that compiles before Telemetry:
+The module ships with a default `TelemetryConfig_Init()` that sets sensible defaults:
 
-```ags
-// In GlobalScript.ash or your Util.ash
-#define TELEMETRY_ENABLED
-#define VERSION "1.0.0-beta"
-```
+| Setting | Default | Description |
+|---|---|---|
+| `Telemetry_IdleSecondsThreshold` | `60` | Seconds of no input before the player is considered idle |
+| `Telemetry_LogPath` | `$SAVEGAMEDIR$/telemetry/telemetry.log` | Where the log file is written |
+| `Telemetry_BuildVersion` | `""` | Your game version string (e.g. `"1.0.0-beta"`) |
+| `Telemetry_PlatformTag` | `""` | Optional label: `"windows"`, `"mac"`, `"linux"`, `"steam"`, etc. |
 
-`TELEMETRY_ENABLED` controls whether telemetry code is compiled into your game. Remove or comment out this line to disable telemetry entirely.
+### Option B: Override in your game
 
-`VERSION` is automatically logged with each session and can be used elsewhere in your game (e.g., displaying version on title screen).
-
-### Override Default Settings
-
-Override the default configuration by implementing `TelemetryConfig_Init()` in your GlobalScript.asc:
+Implement your own `TelemetryConfig_Init()` in GlobalScript.asc (or another module loaded after Telemetry). Because AGS uses last-defined-wins for exported functions, your version will override the module's default:
 
 ```ags
-// In GlobalScript.asc - override the default config
+// GlobalScript.asc (or a Config module loaded after Telemetry)
 void TelemetryConfig_Init()
 {
-  Telemetry_IdleSecondsThreshold = 60;                    // Seconds before player is idle
+  Telemetry_IdleSecondsThreshold = 40;
   Telemetry_LogPath = "$SAVEGAMEDIR$/telemetry/telemetry.log";
-  Telemetry_BuildVersion = VERSION;                       // Uses VERSION defined in your project
-  Telemetry_PlatformTag = "windows";                      // Optional platform identifier
+  Telemetry_BuildVersion = "1.2.0-beta";
+  Telemetry_PlatformTag = "windows";
 }
 ```
 
-## Basic Usage
+### Optional: Conditional compilation
 
-### Initialize and Start Session
+If you want to completely strip telemetry from release builds, define a flag in a Config module loaded before Telemetry:
 
-In your `game_start()` function:
+```ags
+// Config.ash
+#define TELEMETRY_ENABLED
+```
+
+Then wrap all telemetry calls with `#ifdef`:
+
+```ags
+#ifdef TELEMETRY_ENABLED
+  TelemetryConfig_Init();
+  Telemetry_StartSession();
+#endif
+```
+
+This is optional -- if you prefer, you can simply not call `Telemetry_StartSession()` and the module will remain inert (all functions check `Telemetry_SessionActive` before writing).
+
+## Integration
+
+### Required hooks
+
+Add these calls to your `GlobalScript.asc`:
 
 ```ags
 function game_start()
 {
-  #ifdef TELEMETRY_ENABLED
-    TelemetryConfig_Init();
-    Telemetry_StartSession();
-  #endif
+  // ... your normal setup ...
 
-  // ... rest of your game_start code
+  TelemetryConfig_Init();
+  Telemetry_StartSession();
 }
-```
 
-### End Session
-
-In your `game_shutdown()` function or `on_event`:
-
-```ags
 function game_shutdown()
 {
-  #ifdef TELEMETRY_ENABLED
-    Telemetry_EndSession();
-  #endif
-}
-```
-
-### Track User Activity
-
-In your `repeatedly_execute()` function:
-
-```ags
-function repeatedly_execute()
-{
-  Telemetry_Tick();  // Updates idle/active time tracking
-
-  // ... rest of your code
-}
-```
-
-In your `on_mouse_click()` and `on_key_press()` functions:
-
-```ags
-function on_mouse_click(MouseButton button)
-{
-  Telemetry_UserInput();  // Resets idle timer
-
-  // ... rest of your code
+  Telemetry_EndSession();
 }
 
 function on_key_press(eKeyCode keycode, int mod)
 {
-  Telemetry_UserInput();  // Resets idle timer
+  Telemetry_UserInput();
+  // ... your key handling ...
+}
 
-  // ... rest of your code
+function on_mouse_click(MouseButton button)
+{
+  Telemetry_UserInput();
+  // ... your mouse handling ...
+}
+
+function repeatedly_execute_always()
+{
+  Telemetry_Tick();
 }
 ```
 
-### Track Room Changes
+### Room and game event tracking
 
 ```ags
 function on_event(EventType event, int data)
@@ -122,215 +125,199 @@ function on_event(EventType event, int data)
   if (event == eEventEnterRoomBeforeFadein) {
     Telemetry_LogRoomEnter(data, true);
   }
+  else if (event == eEventEnterRoomAfterFadein) {
+    Telemetry_LogRoomEnter(data, false);
+  }
   else if (event == eEventLeaveRoom) {
     Telemetry_LogRoomLeave(data, false);
   }
-}
-```
-
-### Track Inventory Interactions
-
-```ags
-// When player uses inventory item on something in the room
-Telemetry_LogInventoryUseAt(mouse.x, mouse.y, player.ActiveInventory, usedDefaultHandler);
-
-// When player combines two inventory items
-Telemetry_LogInventoryUseInv(player.ActiveInventory, targetItem, usedDefaultHandler);
-```
-
-### Track Character Interactions
-
-```ags
-// When player interacts with a character
-Telemetry_LogCharacterInteraction(mouse.x, mouse.y, mouse.Mode, targetCharacter, usedDefaultHandler);
-```
-
-### Track Save/Restore
-
-```ags
-// After saving
-Telemetry_LogGameSaved(slotNumber);
-
-// After restoring
-Telemetry_LogGameRestored(slotNumber);
-```
-
-### Log Custom Events
-
-```ags
-// Log any custom event
-Telemetry_LogEvent("puzzle_solved", "sliding_puzzle_room5");
-Telemetry_LogEvent("achievement", "found_secret_room");
-```
-
-### Log Milestones
-
-```ags
-// Log key game progression milestones
-Telemetry_LogMilestone("Start new game");
-Telemetry_LogMilestone("End act 1");
-Telemetry_LogMilestone("Game completed");
-```
-
-### Bug Reporting
-
-The bug reporting feature captures a screenshot and game state when players report issues.
-
-#### Simple Usage
-
-```ags
-// Let players report bugs with automatic screenshot
-String screenshotPath = Telemetry_LogBugReport("Player description of bug", false);
-```
-
-#### Creating a Bug Report GUI (Ctrl+R)
-
-For a better user experience, create a GUI that lets players describe bugs and indicate severity.
-
-**Step 1: Create the GUI in AGS Editor**
-
-1. Create a new GUI called `gBugReport`
-2. Add these controls:
-   - `txtBugDescription` - A TextBox for the bug description
-   - `btnBugBlocking` - A Button to toggle "Can continue" / "CANNOT continue"
-   - `btnBugSubmit` - A Button labeled "Submit"
-   - `btnBugCancel` - A Button labeled "Cancel"
-
-**Step 2: Link button events in the GUI**
-
-In the AGS Editor, select the `gBugReport` GUI. For each button, click on it, go to the **Events** tab (lightning bolt icon), and link its `OnClick` event to the corresponding function in GlobalScript:
-   - `btnBugBlocking` -> `btnBugBlocking_OnClick`
-   - `btnBugSubmit` -> `btnBugSubmit_OnClick`
-   - `btnBugCancel` -> `btnBugCancel_OnClick`
-
-**Step 3: Add the dialog code to GlobalScript.asc**
-
-```ags
-bool _bugReportBlocking = false;
-
-function show_bug_report_dialog()
-{
-  _bugReportBlocking = false;
-  txtBugDescription.Text = "";
-  btnBugBlocking.Text = "Can continue";
-  gBugReport.Visible = true;
-}
-
-function btnBugBlocking_OnClick(GUIControl *control, MouseButton button)
-{
-  _bugReportBlocking = !_bugReportBlocking;
-  if (_bugReportBlocking) {
-    btnBugBlocking.Text = "CANNOT continue";
-  } else {
-    btnBugBlocking.Text = "Can continue";
+  else if (event == eEventLeaveRoomAfterFadeout) {
+    Telemetry_LogRoomLeave(data, true);
+  }
+  else if (event == eEventGameSaved) {
+    Telemetry_LogGameSaved(data);
+  }
+  else if (event == eEventRestoreGame) {
+    Telemetry_LogGameRestored(data);
   }
 }
+```
 
-function btnBugSubmit_OnClick(GUIControl *control, MouseButton button)
+### Unhandled interaction logging
+
+```ags
+function unhandled_event(int what, int type)
 {
-  String desc = txtBugDescription.Text;
-  if (desc == "") {
-    Display("Please describe the bug.");
-    return;
-  }
-
-  Telemetry_LogBugReport(desc, _bugReportBlocking);
-  gBugReport.Visible = false;
-  Display("Bug report submitted. Thank you!");
-}
-
-function btnBugCancel_OnClick(GUIControl *control, MouseButton button)
-{
-  gBugReport.Visible = false;
+  Telemetry_LogUnhandled(what, type);
+  // ... your default responses ...
 }
 ```
 
-**Step 4: Add keyboard shortcut (Ctrl+R)**
+### Inventory use on room targets
 
-In your `on_key_press()` function:
+In your room click handler, log when the player uses an inventory item on something in the room, and when they interact with a character:
 
 ```ags
-function on_key_press(eKeyCode keycode, int mod)
+function handle_room_click(MouseButton button)
 {
-  Telemetry_UserInput();
-
-  // Check for Ctrl key modifier
-  if (mod & eKeyModCtrl)
+  if (button == eMouseLeft)
   {
-    if (keycode == eKeyR)
+    if (mouse.Mode == eModeUseinv && player.ActiveInventory != null)
     {
-      // Ctrl+R opens bug report dialog
-      if (!gBugReport.Visible) {
-        show_bug_report_dialog();
+      bool usedDefault = (IsInteractionAvailable(mouse.x, mouse.y, eModeUseinv) == 0);
+      Telemetry_LogInventoryUseAt(mouse.x, mouse.y, player.ActiveInventory, usedDefault);
+    }
+    else
+    {
+      LocationType loc = GetLocationType(mouse.x, mouse.y);
+      if (loc == eLocationCharacter)
+      {
+        Character *c = Character.GetAtScreenXY(mouse.x, mouse.y);
+        if (c != null)
+        {
+          bool usedDefault = (IsInteractionAvailable(mouse.x, mouse.y, mouse.Mode) == 0);
+          Telemetry_LogCharacterInteraction(mouse.x, mouse.y, mouse.Mode, c, usedDefault);
+        }
+      }
+    }
+
+    // ... your normal click processing ...
+  }
+}
+```
+
+### Inventory use on other inventory items
+
+```ags
+function handle_inventory_click(MouseButton button)
+{
+  InventoryItem* item = inventory[game.inv_activated];
+
+  if (button == eMouseLeftInv)
+  {
+    if (mouse.Mode == eModeUseinv)
+    {
+      if (item.ID != player.ActiveInventory.ID)
+      {
+        bool usedDefault = (item.IsInteractionAvailable(eModeUseinv) == 0);
+        Telemetry_LogInventoryUseInv(player.ActiveInventory, item, usedDefault);
+        item.RunInteraction(eModeUseinv);
       }
     }
   }
 
-  // ... rest of your key handling
+  // ... your normal inventory handling ...
 }
 ```
 
-**Step 5: Allow Escape to close the dialog**
+### Custom events and milestones
+
+Log arbitrary events from anywhere in your scripts:
 
 ```ags
-// In on_key_press, handle Escape
-if (keycode == eKeyEscape)
+Telemetry_LogEvent("PuzzleSolved", "opened_safe_with_combination");
+Telemetry_LogMilestone("CompletedChapter1");
+Telemetry_LogError("Dialog tree fell through without a match");
+```
+
+### Bug reporting
+
+The module supports an in-game bug report flow with automatic screenshot capture. Call `Telemetry_PreCaptureBugScreenshot()` **before** showing your bug report GUI so the screenshot captures the game state, not the dialog:
+
+```ags
+function show_bug_report()
 {
-  if (gBugReport.Visible)
-  {
-    gBugReport.Visible = false;
-    return;  // Don't process escape further
-  }
+  Telemetry_PreCaptureBugScreenshot();
+  // ... show your bug report GUI ...
+}
+
+function submit_bug_report(String description, bool cannotContinue)
+{
+  String screenshot = Telemetry_LogBugReport(description, cannotContinue);
+  // screenshot contains the path to the saved .bmp file
+}
+
+function cancel_bug_report()
+{
+  Telemetry_DiscardPreCapturedScreenshot();
+  // ... close your bug report GUI ...
 }
 ```
 
-The bug report logs:
-- Timestamp
-- Whether it's blocking (player cannot continue)
-- Current room, player position, and score
-- Active inventory item
-- Screenshot filename
-- Player's description
+## Log format
 
-## Log File Format
-
-The telemetry log uses a pipe-delimited format:
+Plain text, one event per line, pipe-delimited with key=value pairs:
 
 ```
-2025-03-15 14:23:45|session_start|date=2025-03-15
-2025-03-15 14:23:45|build|version=1.0.0-beta
-2025-03-15 14:23:45|runtime|info=Adventure Game Studio run-time engine...
-2025-03-15 14:23:46|room_enter|room_id=1|phase=after_fadein
-2025-03-15 14:25:30|inv_use|item_id=5|item_name=Key|target_type=hotspot|target_id=3|target_name=Door|default=0|x=150|y=100
-2025-03-15 14:28:00|milestone|name=End act 1
-2025-03-15 14:30:00|idle_state|idle=1
-2025-03-15 14:35:00|session_end|session_seconds=690|active_seconds=390|idle_seconds=300
+YYYY-MM-DD HH:MM:SS|event_type|key=value|key=value
 ```
 
-## Log File Location
+### Example log
 
-By default, the log file is saved to:
-- **Windows**: `%USERPROFILE%\Saved Games\<GameName>\telemetry\telemetry.log`
-- **macOS**: `~/Library/Application Support/<GameName>/telemetry/telemetry.log`
-- **Linux**: `~/.local/share/ags/<GameName>/telemetry/telemetry.log`
+```
+2026-02-07 14:33:02|session_start|date=2026-02-07
+2026-02-07 14:33:02|build|version=1.2.0-beta
+2026-02-07 14:33:02|platform|tag=windows
+2026-02-07 14:33:02|runtime|info=...
+2026-02-07 14:33:10|inv_use|item_id=4|item_name=Rope|target_type=hotspot|target_id=2|target_name=Well|default=0|x=121|y=88
+2026-02-07 14:34:55|char_interact|mode=talk|char_id=1|char_name=Roger|default=0|x=221|y=130
+2026-02-07 14:35:12|room_enter|room_id=10|phase=before_fadein
+2026-02-07 14:35:28|game_saved|slot=5
+2026-02-07 14:36:21|custom|event=PuzzleSolved|data=opened_safe
+2026-02-07 14:37:00|milestone|name=CompletedChapter1
+2026-02-07 14:38:15|bug_report|blocking=0|room=10|x=150|y=90|score=42|active_inv=Rope|screenshot=.../bug_1_20260207_143815.bmp|description=Door won't open
+2026-02-07 14:40:01|session_end|session_seconds=419|active_seconds=300|idle_seconds=119
+```
 
-## Disabling Telemetry
+### Event types
 
-To completely disable telemetry at compile time, remove or comment out the `#define TELEMETRY_ENABLED` line in your `GlobalScript.ash` (or wherever you defined it). This removes all telemetry code from the compiled game.
+| Event | Description |
+|---|---|
+| `session_start` | Game started |
+| `session_end` | Game ended (includes session/active/idle seconds) |
+| `build` | Build version logged at session start |
+| `platform` | Platform tag logged at session start |
+| `runtime` | `System.RuntimeInfo` logged at session start |
+| `idle_state` | Player went idle or returned from idle |
+| `inv_use` | Inventory item used on a room target |
+| `inv_use_inv` | Inventory item used on another inventory item |
+| `char_interact` | Character interaction (look/interact/talk/useinv) |
+| `room_enter` | Player entered a room |
+| `room_leave` | Player left a room |
+| `game_saved` | Game saved to slot |
+| `game_restored` | Game restored from slot |
+| `unhandled` | Unhandled interaction (catch-all / default response) |
+| `error` | Manual error report |
+| `custom` | Custom event |
+| `milestone` | Named milestone reached |
+| `bug_report` | In-game bug report with screenshot |
 
-## Runtime Check
+## Runtime state
 
-You can check if telemetry is active at runtime:
+You can check `Telemetry_SessionActive` from any script to determine if telemetry is currently active:
 
 ```ags
 if (Telemetry_SessionActive) {
-  // Show version number or beta indicator
+  // telemetry is running
 }
 ```
 
+## Notes
+
+- Logs are written to the player's save game directory by default (`$SAVEGAMEDIR$/telemetry/`). This directory is created automatically.
+- Default catch-all detection relies on `IsInteractionAvailable()` and `unhandled_event`. It may not cover all edge cases for inventory-on-inventory if the engine doesn't call `unhandled_event` for those.
+- Engine-level crashes or script aborts cannot be captured by script-only modules. Use `Telemetry_LogError()` for manual error reporting at known risk points.
+- The `_Telemetry_WriteLine()` internal function opens and closes the file on every write. This is intentional -- it ensures data is flushed even if the game crashes.
+- `System.RuntimeInfo` is logged automatically at session start, making `Telemetry_PlatformTag` optional. The tag is useful as a human-readable label when shipping multiple builds (e.g. `"steam"`, `"itch"`, `"internal"`).
+
+## Compatibility
+
+- AGS 3.6.0+ (tested with 3.6.2)
+- Uses `File.Delete`, `File.Open` with `eFileAppend`, `SaveScreenShot`, and `System.RuntimeInfo`
+
 ## License
 
-MIT License - feel free to use in your AGS projects.
+MIT
 
 ## Contributing
 
