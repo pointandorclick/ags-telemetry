@@ -48,3 +48,15 @@ import void TelemetryConfig_Init();
 
 // Runtime state - true if telemetry session is active (safe to check in room scripts)
 import bool Telemetry_SessionActive;
+
+// Network sending via AGSsock (optional - requires AGSsock plugin)
+// Define TELEMETRY_NETWORK in your project to enable network features.
+// Protocol: events are sent over TCP using the same pipe-delimited format
+// as the log file. A handshake identifies the session on connect.
+#ifdef TELEMETRY_NETWORK
+import String Telemetry_ServerHost;            // Server IP or hostname (e.g., "192.168.1.100")
+import int Telemetry_ServerPort;               // Server TCP port (default: 9001)
+import String Telemetry_ApiKey;                // API key for server authentication
+import int Telemetry_SendIntervalSeconds;      // How often to flush queued events (default: 5)
+import bool Telemetry_NetworkConnected;        // Read-only: true if connected to server
+#endif

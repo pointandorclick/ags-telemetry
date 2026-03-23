@@ -314,6 +314,114 @@ By default, the log file is saved to:
 - **macOS**: `~/Library/Application Support/<GameName>/telemetry/telemetry.log`
 - **Linux**: `~/.local/share/ags/<GameName>/telemetry/telemetry.log`
 
+## Network Sending (Optional)
+
+The telemetry module can send events directly to a server over TCP using the [AGSsock](https://github.com/FTPlus/AGSsock) plugin. This removes the need for the companion app in most cases. Events are sent in real-time using the same pipe-delimited format as the log file. File logging is retained as a backup.
+
+### Prerequisites
+
+1. Download the [AGSsock plugin](https://github.com/FTPlus/AGSsock/releases) and add it to your AGS game project
+2. Your dashboard server must have a TCP listener that accepts the telemetry protocol (see [TCP Protocol](#tcp-protocol) below)
+
+### Enable Network Sending
+
+Add `#define TELEMETRY_NETWORK` alongside your existing defines:
+
+```ags
+// In GlobalScript.ash or your Util.ash
+#define TELEMETRY_ENABLED
+#define TELEMETRY_NETWORK
+#define VERSION "1.0.0-beta"
+```
+
+### Configure Server Connection
+
+Override the network settings in your `TelemetryConfig_Init()`:
+
+```ags
+void TelemetryConfig_Init()
+{
+  // ... existing config ...
+  Telemetry_IdleSecondsThreshold = 60;
+  Telemetry_LogPath = "$SAVEGAMEDIR$/telemetry/telemetry.log";
+  Telemetry_BuildVersion = VERSION;
+  Telemetry_PlatformTag = "windows";
+
+  // Network settings (requires TELEMETRY_NETWORK)
+  #ifdef TELEMETRY_NETWORK
+  Telemetry_ServerHost = "192.168.1.100";   // Your server IP or hostname
+  Telemetry_ServerPort = 9001;              // Server TCP port
+  Telemetry_ApiKey = "your-api-key";        // Authentication key
+  Telemetry_SendIntervalSeconds = 5;        // Flush events every 5 seconds
+  #endif
+}
+```
+
+### Network Configuration Variables
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Telemetry_ServerHost` | String | `""` | Server IP or hostname. Must be set for network to work. |
+| `Telemetry_ServerPort` | int | `9001` | Server TCP port |
+| `Telemetry_ApiKey` | String | `""` | API key for server authentication |
+| `Telemetry_SendIntervalSeconds` | int | `5` | How often queued events are flushed to the server |
+| `Telemetry_NetworkConnected` | bool | read-only | `true` when connected to the server |
+
+### How It Works
+
+1. When `Telemetry_StartSession()` is called, the module connects to the server via TCP and sends a handshake
+2. The server responds with a session ID
+3. Events are queued in an in-memory buffer (up to 500 events) and flushed to the server periodically
+4. Events are also always written to the log file as a backup
+5. If the connection drops, the module reconnects automatically with exponential backoff (5s, 10s, 20s, up to 60s)
+6. On session end, all remaining queued events are flushed before disconnecting
+
+### Checking Connection Status
+
+```ags
+#ifdef TELEMETRY_NETWORK
+if (Telemetry_NetworkConnected) {
+  // Currently connected to the telemetry server
+}
+#endif
+```
+
+### TCP Protocol
+
+The module uses a simple text-based protocol over TCP. This is what the server needs to implement:
+
+**Handshake (new session)**:
+```
+Client sends: TELEMETRY|1|<api_key>|<build_version>|<platform_tag>\n
+Server responds: OK|<session_id>\n
+```
+
+**Handshake (resume after reconnect)**:
+```
+Client sends: RESUME|1|<api_key>|<session_id>\n
+Server responds: OK|<session_id>\n
+```
+
+**Error response**:
+```
+Server responds: ERROR|<reason>\n
+```
+
+**Events** (same format as log file, one per line):
+```
+2025-03-15 14:23:45|session_start|date=2025-03-15\n
+2025-03-15 14:23:46|room_enter|room_id=1|phase=after_fadein\n
+```
+
+The protocol version number (the `1` in the handshake) allows for future protocol changes.
+
+### Limitations
+
+- **No TLS/SSL**: AGSsock provides raw TCP sockets. Traffic is unencrypted. The API key provides authentication but not confidentiality. Acceptable for beta testing telemetry.
+- **No screenshot uploads**: Bug report screenshots are saved locally and are not sent over the network. Use the companion app or collect them manually.
+- **In-memory queue only**: If the game crashes while events are queued but unsent, those events are lost from the queue. They are still in the log file.
+- **Queue overflow**: If the server is unreachable for an extended period, the oldest events are dropped from the queue when it reaches 500 entries. Dropped events are still in the log file.
+
 ## Disabling Telemetry
 
 To completely disable telemetry at compile time, remove or comment out the `#define TELEMETRY_ENABLED` line in your `GlobalScript.ash` (or wherever you defined it). This removes all telemetry code from the compiled game.
