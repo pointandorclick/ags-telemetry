@@ -1,324 +1,132 @@
-# AGS Telemetry Module
+# ags-telemetry
 
-A local telemetry logging module for [Adventure Game Studio](https://www.adventuregamestudio.co.uk/) (AGS 3.6+) games. Designed for alpha/beta testing, it tracks player sessions, interactions, idle time, room transitions, save/load events, bug reports, milestones, and errors -- all written to a plain-text log file on the player's machine.
+Native Adventure Game Studio (AGS 3.6.x) engine plugin that streams gameplay
+telemetry in realtime to an [ags-telemetry-dashboard](https://github.com/pointandorclick/ags-telementry-dashboard)
+server — replacing the old "write a log file and hope the tester emails it"
+workflow.
 
-## Features
-
-- Session start/end with active vs idle time tracking
-- Inventory-on-world and inventory-on-inventory interaction logging
-- Character interaction logging (look, interact, talk, use inventory)
-- Room enter/leave tracking (before and after fade)
-- Save/restore slot tracking
-- Unhandled interaction detection (catch-all / default response logging)
-- Custom event and milestone logging
-- Bug report system with automatic screenshot capture
-- Build version and runtime metadata
-- Optional platform tagging for multi-platform builds
-- Zero dependencies -- pure AGS script module
-
-## Installation
-
-1. Copy `Telemetry.ash` and `Telemetry.asc` into your AGS project folder.
-2. In the AGS Editor, add both files as a Script Module (right-click Scripts in the project tree > "New Script Module", then replace the generated files, or import them).
-3. Make sure the Telemetry module is loaded **after** any Config module that defines `#define` constants, and **before** your GlobalScript.
-
-Your script load order should look something like:
+## How it works
 
 ```
-Config          (optional - for #defines like TELEMETRY_ENABLED)
-Telemetry       <-- this module
-[other modules]
-GlobalScript
+AGS script (Telemetry.asc module)          agstelemetry plugin (native)
+  _Telemetry_WriteLine(line) ───────────►  AgsTelemetry_Send(line)   [returns instantly]
+      │ still appends to the local              │ in-memory queue
+      ▼ telemetry.log as before                 ▼ background worker thread
+                                           batches → HTTP POST /api/collect/events
+                                           offline → spool to disk, re-send next launch
 ```
 
-## Configuration
+- The existing AGS **script module stays the capture layer** — the plugin is a
+  thin async transport. All four script calls are non-blocking; the game never
+  stalls on network I/O.
+- **Session lifecycle**: `AgsTelemetry_Init` POSTs `/api/collect/session`
+  (retrying with backoff until connected), events flush every ~3 s or 20
+  events, `AgsTelemetry_EndSession` flushes and PATCHes the session closed.
+- **Offline/failure**: events queue in memory (cap 5000, overflow to disk).
+  Anything undelivered at exit is spooled to `<spoolDir>/pending-*.log` and
+  re-sent on the next launch — complete offline sessions via
+  `POST /api/collect/import`, partial remainders via `/api/collect/events`.
+  The script module's local `telemetry.log` is untouched and remains the
+  ground-truth backup.
+- **Auth**: optional `Authorization: Bearer <TELEMETRY_API_KEY>`. After 3
+  hard rejections (bad key / unregistered version) the plugin stops calling
+  the server for the rest of the session and spools locally instead.
 
-### Option A: Use the built-in defaults
+## Script API
 
-The module ships with a default `TelemetryConfig_Init()` that sets sensible defaults:
+Registered by the plugin (the editor injects these imports automatically when
+the plugin is enabled — see `ags-script/AgsTelemetry.ash` for reference).
+`ags-script/` also carries the full `Telemetry.ash`/`Telemetry.asc` capture
+module (the successor to the original script-only version of this repo, now
+with the plugin hooks behind `#define TELEMETRY_REMOTE`):
 
-| Setting | Default | Description |
-|---|---|---|
-| `Telemetry_IdleSecondsThreshold` | `60` | Seconds of no input before the player is considered idle |
-| `Telemetry_LogPath` | `$SAVEGAMEDIR$/telemetry/telemetry.log` | Where the log file is written |
-| `Telemetry_BuildVersion` | `""` | Your game version string (e.g. `"1.0.0-beta"`) |
-| `Telemetry_PlatformTag` | `""` | Optional label: `"windows"`, `"mac"`, `"linux"`, `"steam"`, etc. |
-
-### Option B: Override in your game
-
-Implement your own `TelemetryConfig_Init()` in GlobalScript.asc (or another module loaded after Telemetry). Because AGS uses last-defined-wins for exported functions, your version will override the module's default:
-
-```ags
-// GlobalScript.asc (or a Config module loaded after Telemetry)
-void TelemetryConfig_Init()
-{
-  Telemetry_IdleSecondsThreshold = 40;
-  Telemetry_LogPath = "$SAVEGAMEDIR$/telemetry/telemetry.log";
-  Telemetry_BuildVersion = "1.2.0-beta";
-  Telemetry_PlatformTag = "windows";
-}
+```agsscript
+import void AgsTelemetry_Init(String serverUrl, String apiKey, String fullVersion,
+                              String platform, String runtimeInfo, String spoolDir);
+import void AgsTelemetry_Send(String rawLine);   // "YYYY-MM-DD HH:MM:SS|type|k=v|k=v"
+import void AgsTelemetry_UpdateStats(int sessionSeconds, int activeSeconds, int idleSeconds);
+import void AgsTelemetry_EndSession(int sessionSeconds, int activeSeconds, int idleSeconds);
+import int  AgsTelemetry_GetStatus();            // 0 off, 1 connecting, 2 connected, 3 rejected
 ```
 
-### Optional: Conditional compilation
+**Session closing:** AGS never calls a script function when the game quits
+(`game_shutdown()` is not a real AGS entry point), so don't rely on
+`AgsTelemetry_EndSession` alone. Call `AgsTelemetry_UpdateStats` about once a
+second from your tick — the plugin then closes the session itself (final flush
++ PATCH with the latest stats) when the engine shuts down. Force-kills and
+crashes are covered server-side: the dashboard auto-closes sessions that
+receive no events for 10 minutes.
 
-If you want to completely strip telemetry from release builds, define a flag in a Config module loaded before Telemetry:
+`spoolDir` accepts AGS script paths (e.g. `"$SAVEGAMEDIR$/telemetry"`); the
+plugin resolves them through the engine (interface v27+).
 
-```ags
-// Config.ash
-#define TELEMETRY_ENABLED
-```
+## Building
 
-Then wrap all telemetry calls with `#ifdef`:
+| Target | Command | Output | HTTP stack |
+|---|---|---|---|
+| macOS (universal) | `scripts/build-mac.sh` | `build-mac/libagstelemetry.dylib` | system libcurl |
+| Windows 32-bit | `scripts/build-windows.sh` | `build-win32/agstelemetry.dll` | WinHTTP |
+| Linux x86-64 | `cmake -B build-linux && cmake --build build-linux` (on Linux/Docker) | `libagstelemetry.so` | libcurl (`libcurl4-openssl-dev`) |
 
-```ags
-#ifdef TELEMETRY_ENABLED
-  TelemetryConfig_Init();
-  Telemetry_StartSession();
-#endif
-```
+Windows cross-build needs `brew install mingw-w64`. The DLL is 32-bit (PE32)
+because the AGS 3.6.x editor and default engine are 32-bit; it depends only on
+`kernel32`, `winhttp` and the UCRT (present on Windows 10+).
 
-This is optional -- if you prefer, you can simply not call `Telemetry_StartSession()` and the module will remain inert (all functions check `Telemetry_SessionActive` before writing).
-
-## Integration
-
-### Required hooks
-
-Add these calls to your `GlobalScript.asc`:
-
-```ags
-function game_start()
-{
-  // ... your normal setup ...
-
-  TelemetryConfig_Init();
-  Telemetry_StartSession();
-}
-
-function game_shutdown()
-{
-  Telemetry_EndSession();
-}
-
-function on_key_press(eKeyCode keycode, int mod)
-{
-  Telemetry_UserInput();
-  // ... your key handling ...
-}
-
-function on_mouse_click(MouseButton button)
-{
-  Telemetry_UserInput();
-  // ... your mouse handling ...
-}
-
-function repeatedly_execute_always()
-{
-  Telemetry_Tick();
-}
-```
-
-### Room and game event tracking
-
-```ags
-function on_event(EventType event, int data)
-{
-  if (event == eEventEnterRoomBeforeFadein) {
-    Telemetry_LogRoomEnter(data, true);
-  }
-  else if (event == eEventEnterRoomAfterFadein) {
-    Telemetry_LogRoomEnter(data, false);
-  }
-  else if (event == eEventLeaveRoom) {
-    Telemetry_LogRoomLeave(data, false);
-  }
-  else if (event == eEventLeaveRoomAfterFadeout) {
-    Telemetry_LogRoomLeave(data, true);
-  }
-  else if (event == eEventGameSaved) {
-    Telemetry_LogGameSaved(data);
-  }
-  else if (event == eEventRestoreGame) {
-    Telemetry_LogGameRestored(data);
-  }
-}
-```
-
-### Unhandled interaction logging
-
-```ags
-function unhandled_event(int what, int type)
-{
-  Telemetry_LogUnhandled(what, type);
-  // ... your default responses ...
-}
-```
-
-### Inventory use on room targets
-
-In your room click handler, log when the player uses an inventory item on something in the room, and when they interact with a character:
-
-```ags
-function handle_room_click(MouseButton button)
-{
-  if (button == eMouseLeft)
-  {
-    if (mouse.Mode == eModeUseinv && player.ActiveInventory != null)
-    {
-      bool usedDefault = (IsInteractionAvailable(mouse.x, mouse.y, eModeUseinv) == 0);
-      Telemetry_LogInventoryUseAt(mouse.x, mouse.y, player.ActiveInventory, usedDefault);
-    }
-    else
-    {
-      LocationType loc = GetLocationType(mouse.x, mouse.y);
-      if (loc == eLocationCharacter)
-      {
-        Character *c = Character.GetAtScreenXY(mouse.x, mouse.y);
-        if (c != null)
-        {
-          bool usedDefault = (IsInteractionAvailable(mouse.x, mouse.y, mouse.Mode) == 0);
-          Telemetry_LogCharacterInteraction(mouse.x, mouse.y, mouse.Mode, c, usedDefault);
-        }
-      }
-    }
-
-    // ... your normal click processing ...
-  }
-}
-```
-
-### Inventory use on other inventory items
-
-```ags
-function handle_inventory_click(MouseButton button)
-{
-  InventoryItem* item = inventory[game.inv_activated];
-
-  if (button == eMouseLeftInv)
-  {
-    if (mouse.Mode == eModeUseinv)
-    {
-      if (item.ID != player.ActiveInventory.ID)
-      {
-        bool usedDefault = (item.IsInteractionAvailable(eModeUseinv) == 0);
-        Telemetry_LogInventoryUseInv(player.ActiveInventory, item, usedDefault);
-        item.RunInteraction(eModeUseinv);
-      }
-    }
-  }
-
-  // ... your normal inventory handling ...
-}
-```
-
-### Custom events and milestones
-
-Log arbitrary events from anywhere in your scripts:
-
-```ags
-Telemetry_LogEvent("PuzzleSolved", "opened_safe_with_combination");
-Telemetry_LogMilestone("CompletedChapter1");
-Telemetry_LogError("Dialog tree fell through without a match");
-```
-
-### Bug reporting
-
-The module supports an in-game bug report flow with automatic screenshot capture. Call `Telemetry_PreCaptureBugScreenshot()` **before** showing your bug report GUI so the screenshot captures the game state, not the dialog:
-
-```ags
-function show_bug_report()
-{
-  Telemetry_PreCaptureBugScreenshot();
-  // ... show your bug report GUI ...
-}
-
-function submit_bug_report(String description, bool cannotContinue)
-{
-  String screenshot = Telemetry_LogBugReport(description, cannotContinue);
-  // screenshot contains the path to the saved .bmp file
-}
-
-function cancel_bug_report()
-{
-  Telemetry_DiscardPreCapturedScreenshot();
-  // ... close your bug report GUI ...
-}
-```
-
-## Log format
-
-Plain text, one event per line, pipe-delimited with key=value pairs:
+`-DBUILD_TEST_DRIVER=ON` also builds `telemetry-driver`, a CLI that simulates
+a full game session against a dashboard:
 
 ```
-YYYY-MM-DD HH:MM:SS|event_type|key=value|key=value
+./build-mac/telemetry-driver http://localhost:3000 <apiKey> 0.9.0-dev-me 25 /tmp/spool
 ```
 
-### Example log
+## Installing into a game (Sierra Quest specifics)
 
-```
-2026-02-07 14:33:02|session_start|date=2026-02-07
-2026-02-07 14:33:02|build|version=1.2.0-beta
-2026-02-07 14:33:02|platform|tag=windows
-2026-02-07 14:33:02|runtime|info=...
-2026-02-07 14:33:10|inv_use|item_id=4|item_name=Rope|target_type=hotspot|target_id=2|target_name=Well|default=0|x=121|y=88
-2026-02-07 14:34:55|char_interact|mode=talk|char_id=1|char_name=Roger|default=0|x=221|y=130
-2026-02-07 14:35:12|room_enter|room_id=10|phase=before_fadein
-2026-02-07 14:35:28|game_saved|slot=5
-2026-02-07 14:36:21|custom|event=PuzzleSolved|data=opened_safe
-2026-02-07 14:37:00|milestone|name=CompletedChapter1
-2026-02-07 14:38:15|bug_report|blocking=0|room=10|x=150|y=90|score=42|active_inv=Rope|screenshot=.../bug_1_20260207_143815.bmp|description=Door won't open
-2026-02-07 14:40:01|session_end|session_seconds=419|active_seconds=300|idle_seconds=119
-```
+0. **Dashboard first**: make sure the server has
+   `TELEMETRY_AUTO_REGISTER_VERSIONS=true` (`.env.local` for `npm run dev`,
+   compose environment for Docker — restart after changing). Without it the
+   server 400-rejects sessions from any version not registered via the GitLab
+   webhook: the game runs fine but nothing appears on the Live page, and the
+   plugin spools the session to `<save dir>/telemetry/pending-*.log` for
+   delivery on a later launch.
+1. `scripts/build-mac.sh && scripts/build-windows.sh`
+2. `scripts/install-sierra-quest.sh` — copies the DLL into the AGS editor dir
+   (CrossOver bottle) + `Compiled/Windows/`, and the dylib into the mac app
+   bundle next to the engine binary.
+3. In the AGS editor: project tree → **Plugins** → right-click
+   **AGS Telemetry** → *Use this plugin*.
+4. In the game project: uncomment `#define TELEMETRY_REMOTE` in `Config.ash`,
+   set `Telemetry_ServerUrl` / `Telemetry_ApiKey` in `TelemetryConfig_Init()`
+   (Telemetry.asc), rebuild.
 
-### Event types
+The Telemetry module guards every plugin call behind `TELEMETRY_REMOTE`, so
+builds compile unchanged while the define is off.
 
-| Event | Description |
-|---|---|
-| `session_start` | Game started |
-| `session_end` | Game ended (includes session/active/idle seconds) |
-| `build` | Build version logged at session start |
-| `platform` | Platform tag logged at session start |
-| `runtime` | `System.RuntimeInfo` logged at session start |
-| `idle_state` | Player went idle or returned from idle |
-| `inv_use` | Inventory item used on a room target |
-| `inv_use_inv` | Inventory item used on another inventory item |
-| `char_interact` | Character interaction (look/interact/talk/useinv) |
-| `room_enter` | Player entered a room |
-| `room_leave` | Player left a room |
-| `game_saved` | Game saved to slot |
-| `game_restored` | Game restored from slot |
-| `unhandled` | Unhandled interaction (catch-all / default response) |
-| `error` | Manual error report |
-| `custom` | Custom event |
-| `milestone` | Named milestone reached |
-| `bug_report` | In-game bug report with screenshot |
+## Dashboard requirements
 
-## Runtime state
+Needs these (already implemented in ags-telemetry-dashboard):
 
-You can check `Telemetry_SessionActive` from any script to determine if telemetry is currently active:
+- `POST /api/collect/events` accepts `{"sessionId": N, "rawLines": [...]}`
+  in addition to structured `events`.
+- `POST /api/collect/import` (text/plain log content) for spooled offline
+  sessions. Returns 422 when the version is unregistered — the plugin keeps
+  the file and retries next launch; 400 means "bad content, discard".
+- `TELEMETRY_AUTO_REGISTER_VERSIONS=true` env var to auto-create unknown
+  `(version, channel)` pairs instead of rejecting sessions that weren't
+  tagged via the GitLab webhook.
 
-```ags
-if (Telemetry_SessionActive) {
-  // telemetry is running
-}
-```
+The dashboard's `/live` page polls every 5 s, so sessions appear within
+seconds of launch with no push infrastructure.
 
-## Notes
+## Platform notes & limitations
 
-- Logs are written to the player's save game directory by default (`$SAVEGAMEDIR$/telemetry/`). This directory is created automatically.
-- Default catch-all detection relies on `IsInteractionAvailable()` and `unhandled_event`. It may not cover all edge cases for inventory-on-inventory if the engine doesn't call `unhandled_event` for those.
-- Engine-level crashes or script aborts cannot be captured by script-only modules. Use `Telemetry_LogError()` for manual error reporting at known risk points.
-- The `_Telemetry_WriteLine()` internal function opens and closes the file on every write. This is intentional -- it ensures data is flushed even if the game crashes.
-- `System.RuntimeInfo` is logged automatically at session start, making `Telemetry_PlatformTag` optional. The tag is useful as a human-readable label when shipping multiple builds (e.g. `"steam"`, `"itch"`, `"internal"`).
-
-## Compatibility
-
-- AGS 3.6.0+ (tested with 3.6.2)
-- Uses `File.Delete`, `File.Open` with `eFileAppend`, `SaveScreenShot`, and `System.RuntimeInfo`
-
-## License
-
-MIT
-
-## Contributing
-
-Issues and pull requests welcome at: https://github.com/pointandorclick/ags-telemetry
+- **Threading**: the worker thread never touches `IAGSEngine`; script-facing
+  calls only mutate the queue under a mutex. Engine shutdown gives the worker
+  ~2.5 s to flush, then spools what's left — worst case data arrives on the
+  next launch, never lost (and the local log always has everything).
+- **macOS**: the engine must load `libagstelemetry.dylib` (place next to the
+  engine binary in the app bundle). If the self-built mac engine doesn't
+  dlopen plugins, compile the plugin in as a builtin
+  (`pl_register_builtin_plugin`) — sources are engine-agnostic C++17.
+- **Web (Emscripten)**: AGS's web port doesn't support plugins; telemetry is
+  a no-op there (keep `TELEMETRY_REMOTE` off for web builds).
+- **Android**: possible later — build per-ABI `.so`s; not wired up yet.
