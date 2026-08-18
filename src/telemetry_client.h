@@ -18,6 +18,7 @@ struct Config {
     std::string platform;     // e.g. "windows", "mac"
     std::string runtimeInfo;  // free text (System.RuntimeInfo)
     std::string spoolDir;     // resolved filesystem dir for offline spool; empty disables spooling
+    std::string savegameDir;  // resolved $SAVEGAMEDIR$ for screenshot path resolution
 };
 
 enum Status {

@@ -48,4 +48,29 @@ long ExtractLong(const std::string& json, const std::string& key, long fallback)
     return neg ? -v : v;
 }
 
+std::vector<long> ExtractLongArray(const std::string& json, const std::string& key) {
+    std::vector<long> result;
+    const std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return result;
+    pos = json.find('[', pos + needle.size());
+    if (pos == std::string::npos) return result;
+    ++pos;  // skip '['
+    while (pos < json.size()) {
+        while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+               json[pos] == '\n' || json[pos] == '\r' || json[pos] == ',')) ++pos;
+        if (pos >= json.size() || json[pos] == ']') break;
+        bool neg = false;
+        if (json[pos] == '-') { neg = true; ++pos; }
+        if (pos >= json.size() || json[pos] < '0' || json[pos] > '9') break;
+        long v = 0;
+        while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') {
+            v = v * 10 + (json[pos] - '0');
+            ++pos;
+        }
+        result.push_back(neg ? -v : v);
+    }
+    return result;
+}
+
 }  // namespace agstel

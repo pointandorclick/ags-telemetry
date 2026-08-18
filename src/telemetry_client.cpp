@@ -109,8 +109,10 @@ void SpoolQueue() {
     SpoolLines(lines, g_sessionId.load());
 }
 
+// Posts events and returns true on success. On success, resp is populated with
+// the server response (used to extract bugIds for screenshot uploads).
 bool PostEvents(long sessionId, const std::vector<std::string>& lines,
-                int connectMs, int totalMs) {
+                int connectMs, int totalMs, HttpResponse* respOut = nullptr) {
     std::ostringstream body;
     body << "{\"sessionId\":" << sessionId << ",\"rawLines\":[";
     for (size_t i = 0; i < lines.size(); ++i) {
@@ -121,7 +123,87 @@ bool PostEvents(long sessionId, const std::vector<std::string>& lines,
     HttpResponse resp;
     bool ok = HttpRequest("POST", g_cfg.baseUrl + "/api/collect/events",
                           JsonHeaders(), body.str(), &resp, connectMs, totalMs);
+    bool success = ok && resp.status >= 200 && resp.status < 300;
+    if (success && respOut) *respOut = std::move(resp);
+    return success;
+}
+
+// Resolves an AGS script path (e.g. "$SAVEGAMEDIR$/telemetry/bug_1.bmp") to a
+// real filesystem path using the resolved savegameDir from config.
+std::string ResolveScreenshotPath(const std::string& scriptPath) {
+    const char* prefix = "$SAVEGAMEDIR$";
+    size_t prefixLen = std::strlen(prefix);
+    if (scriptPath.compare(0, prefixLen, prefix) == 0) {
+        return g_cfg.savegameDir + scriptPath.substr(prefixLen);
+    }
+    return scriptPath;  // already a real path
+}
+
+// Extracts the screenshot= value from a bug_report raw line.
+std::string ExtractScreenshotField(const std::string& line) {
+    const char* key = "screenshot=";
+    size_t pos = line.find(key);
+    if (pos == std::string::npos) return {};
+    pos += std::strlen(key);
+    size_t end = line.find('|', pos);
+    if (end == std::string::npos) end = line.size();
+    return line.substr(pos, end - pos);
+}
+
+// Uploads a BMP screenshot file to the dashboard for a specific bug report.
+bool PostScreenshot(long bugId, const std::string& filePath,
+                    int connectMs, int totalMs) {
+    std::ifstream f(filePath, std::ios::binary);
+    if (!f) return false;
+    std::string fileData((std::istreambuf_iterator<char>(f)),
+                          std::istreambuf_iterator<char>());
+    if (fileData.empty()) return false;
+
+    const std::string boundary = "----AgsTelemetryBoundary";
+    std::string body;
+    body += "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"file\"; filename=\"screenshot.bmp\"\r\n";
+    body += "Content-Type: image/bmp\r\n\r\n";
+    body += fileData;
+    body += "\r\n--" + boundary + "--\r\n";
+
+    std::vector<std::pair<std::string, std::string>> headers;
+    headers.emplace_back("Content-Type", "multipart/form-data; boundary=" + boundary);
+    if (!g_cfg.apiKey.empty()) headers.emplace_back("Authorization", "Bearer " + g_cfg.apiKey);
+
+    std::ostringstream url;
+    url << g_cfg.baseUrl << "/api/bugs/" << bugId << "/screenshot";
+
+    HttpResponse resp;
+    bool ok = HttpRequest("POST", url.str(), headers, body, &resp, connectMs, totalMs);
     return ok && resp.status >= 200 && resp.status < 300;
+}
+
+// After a successful PostEvents, uploads screenshots for any bug_report lines
+// in the batch. bugIds from the server response are matched to bug_report lines
+// in order.
+void UploadBatchScreenshots(const std::vector<std::string>& batch,
+                            const HttpResponse& resp,
+                            int connectMs, int totalMs) {
+    if (g_cfg.savegameDir.empty()) return;
+
+    std::vector<long> bugIds = ExtractLongArray(resp.body, "bugIds");
+    if (bugIds.empty()) return;
+
+    // Collect screenshot paths from bug_report lines in batch order.
+    std::vector<std::string> screenshotPaths;
+    for (const auto& line : batch) {
+        if (line.find("|bug_report|") == std::string::npos) continue;
+        std::string path = ExtractScreenshotField(line);
+        if (!path.empty()) screenshotPaths.push_back(path);
+    }
+
+    // Match bugIds to screenshot paths (same order from the server).
+    size_t count = std::min(bugIds.size(), screenshotPaths.size());
+    for (size_t i = 0; i < count; ++i) {
+        std::string resolved = ResolveScreenshotPath(screenshotPaths[i]);
+        PostScreenshot(bugIds[i], resolved, connectMs, totalMs);
+    }
 }
 
 // Negative activeSeconds/idleSeconds are omitted (server keeps them null).
@@ -309,8 +391,10 @@ void StreamEvents() {
         if (!batch.empty()) {
             int connectMs = shutdownNow ? kShutdownConnectMs : kConnectTimeoutMs;
             int totalMs = shutdownNow ? kShutdownTotalMs : kTotalTimeoutMs;
-            if (PostEvents(g_sessionId.load(), batch, connectMs, totalMs)) {
+            HttpResponse eventsResp;
+            if (PostEvents(g_sessionId.load(), batch, connectMs, totalMs, &eventsResp)) {
                 backoff = kBackoffStartMs;
+                UploadBatchScreenshots(batch, eventsResp, connectMs, totalMs);
             } else if (shutdownNow) {
                 SpoolLines(batch, g_sessionId.load());
                 SpoolQueue();

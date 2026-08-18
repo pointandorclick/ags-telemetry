@@ -51,6 +51,7 @@ void AgsTelemetry_Init(const char* serverUrl, const char* apiKey,
     cfg.platform = SafeStr(platform);
     cfg.runtimeInfo = SafeStr(runtimeInfo);
     cfg.spoolDir = ResolveSpoolDir(SafeStr(spoolDir));
+    cfg.savegameDir = ResolveSpoolDir("$SAVEGAMEDIR$");
     agstel::Init(cfg);
 }
 
